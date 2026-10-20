@@ -1,6 +1,8 @@
 {
   "geode": "5.11.2",
-  "gd": "2.2081",
+  "gd": {
+    "win": "2.2081"
+  },
   "id": "yourname.safe-click-assist",
   "name": "Safe Click Assist",
   "version": "v1.0.0",
