@@ -4,6 +4,7 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <optional>
+#include <vector>
 #include <cstdlib>
 
 using namespace geode::prelude;
@@ -12,17 +13,25 @@ namespace {
     constexpr float kStep = 1.f / 60.f;
 
     struct PendingClick { int framesLeft; bool down; int button; bool p1; };
+    struct QueuedInput { bool down; int button; bool p1; };
 
     bool g_simulating = false;   // 미리보기 시뮬레이션 중인지
     bool g_simDied = false;      // 시뮬레이션에서 죽었는지
     bool g_injecting = false;    // 모드가 직접 입력을 넣는 중인지
-    std::optional<PendingClick> g_pending;
+    std::optional<PendingClick> g_pending;   // 늦춰서 넣을 입력
+    std::vector<QueuedInput> g_stash;        // 이번 틱에 들어온 입력 (나중에 판단)
 
     int strength() {
         return (int)Mod::get()->getSettingValue<int64_t>("strength");
     }
     bool isEnabled() {
         return Mod::get()->getSettingValue<bool>("enabled") && strength() > 0;
+    }
+
+    void injectNow(PlayLayer* pl, bool down, int button, bool p1) {
+        g_injecting = true;
+        pl->handleButton(down, button, p1);
+        g_injecting = false;
     }
 
     // 입력을 delay 프레임 뒤에 적용했을 때 lookahead 프레임 안에 죽는지 확인
@@ -45,6 +54,37 @@ namespace {
         g_simulating = false;
         return g_simDied;
     }
+
+    // 들어온 입력 하나를 판단해서 바로 넣거나, 취소하고 늦춰서 넣도록 예약
+    void decide(PlayLayer* pl, QueuedInput in) {
+        // 대기 중인 입력과 반대되는 입력이 들어오면 대기 입력을 먼저 처리
+        if (g_pending && g_pending->down != in.down) {
+            auto p = *g_pending;
+            g_pending.reset();
+            injectNow(pl, p.down, p.button, p.p1);
+        }
+
+        int s = strength();
+        // 강도에 따라 개입 확률 결정
+        if ((std::rand() % 100) >= s) {
+            return injectNow(pl, in.down, in.button, in.p1);
+        }
+
+        int lookahead = 2 + s * 28 / 100;   // 2~30 프레임
+        int maxDelay  = 1 + s * 9 / 100;    // 1~10 프레임
+
+        if (!simulateDies(pl, in.down, in.button, in.p1, 0, lookahead)) {
+            return injectNow(pl, in.down, in.button, in.p1);
+        }
+        for (int d = 1; d <= maxDelay; ++d) {
+            if (!simulateDies(pl, in.down, in.button, in.p1, d, lookahead)) {
+                g_pending = PendingClick{d, in.down, in.button, in.p1};
+                return;   // 원래 입력은 취소
+            }
+        }
+        // 구제할 방법이 없으면 원래 입력 그대로
+        injectNow(pl, in.down, in.button, in.p1);
+    }
 }
 
 class $modify(SimPlayLayer, PlayLayer) {
@@ -58,58 +98,45 @@ class $modify(SimPlayLayer, PlayLayer) {
 
     void resetLevel() {
         g_pending.reset();
+        g_stash.clear();
         PlayLayer::resetLevel();
     }
 };
 
 class $modify(AssistLayer, GJBaseGameLayer) {
+    // 입력 처리 루프 안에서는 판단하지 않고 보관만 함 (루프 중 재진입 방지)
     void handleButton(bool down, int button, bool isPlayer1) {
         auto pl = PlayLayer::get();
-        if (!pl || g_simulating || g_injecting || !isEnabled()) {
+        if (!pl || static_cast<GJBaseGameLayer*>(pl) != this ||
+            g_simulating || g_injecting || !isEnabled()) {
             return GJBaseGameLayer::handleButton(down, button, isPlayer1);
         }
-
-        // 대기 중인 입력과 반대되는 입력이 들어오면 대기 입력을 먼저 처리
-        if (g_pending && g_pending->down != down) {
-            auto p = *g_pending;
-            g_pending.reset();
-            g_injecting = true;
-            GJBaseGameLayer::handleButton(p.down, p.button, p.p1);
-            g_injecting = false;
-        }
-
-        int s = strength();
-        // 강도에 따라 개입 확률 결정
-        if ((std::rand() % 100) >= s) {
-            return GJBaseGameLayer::handleButton(down, button, isPlayer1);
-        }
-
-        int lookahead = 2 + s * 28 / 100;   // 2~30 프레임
-        int maxDelay  = 1 + s * 9 / 100;    // 1~10 프레임
-
-        if (!simulateDies(pl, down, button, isPlayer1, 0, lookahead)) {
-            return GJBaseGameLayer::handleButton(down, button, isPlayer1);
-        }
-        for (int d = 1; d <= maxDelay; ++d) {
-            if (!simulateDies(pl, down, button, isPlayer1, d, lookahead)) {
-                g_pending = PendingClick{d, down, button, isPlayer1};
-                return;   // 원래 입력은 취소
-            }
-        }
-        // 구제할 방법이 없으면 원래 입력 그대로
-        GJBaseGameLayer::handleButton(down, button, isPlayer1);
+        g_stash.push_back(QueuedInput{down, button, isPlayer1});
     }
 
     void processCommands(float dt, bool isHalfTick, bool isLastTick) {
         GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
+        if (g_simulating) return;
+
+        auto pl = PlayLayer::get();
+        if (!pl || static_cast<GJBaseGameLayer*>(pl) != this) {
+            g_stash.clear();
+            g_pending.reset();
+            return;
+        }
+
+        // 입력 큐 처리가 끝난 뒤에 보관해 둔 입력을 판단
+        if (!g_stash.empty()) {
+            auto list = std::move(g_stash);
+            g_stash.clear();
+            for (auto const& in : list) decide(pl, in);
+        }
+
         // 한 프레임에 여러 번 호출되므로 마지막 틱에서만 프레임 카운트를 줄임
-        if (g_simulating || !g_pending || !isLastTick) return;
-        if (--g_pending->framesLeft <= 0) {
+        if (g_pending && isLastTick && --g_pending->framesLeft <= 0) {
             auto p = *g_pending;
             g_pending.reset();
-            g_injecting = true;
-            GJBaseGameLayer::handleButton(p.down, p.button, p.p1);
-            g_injecting = false;
+            injectNow(pl, p.down, p.button, p.p1);
         }
     }
 };
