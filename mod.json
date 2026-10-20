@@ -1,0 +1,30 @@
+{
+  "geode": "5.11.2",
+  "gd": "2.2081",
+  "id": "yourname.safe-click-assist",
+  "name": "Safe Click Assist",
+  "version": "v1.0.0",
+  "developer": "yourname",
+  "description": "죽는 클릭/릴리즈를 취소하고 생존 가능한 프레임에 대신 입력하는 개인용 보조 모드",
+  "settings": {
+    "enabled": {
+      "type": "bool",
+      "name": "활성화",
+      "default": false
+    },
+    "strength": {
+      "type": "int",
+      "name": "강도",
+      "description": "높을수록 더 멀리 내다보고, 더 자주 개입하고, 더 많이 늦춰서 입력해요.",
+      "default": 50,
+      "min": 0,
+      "max": 100,
+      "control": { "slider": true }
+    },
+    "menu-key": {
+      "type": "keybind",
+      "name": "설정창 열기 키",
+      "default": "F3"
+    }
+  }
+}
