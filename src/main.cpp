@@ -100,9 +100,10 @@ class $modify(AssistLayer, GJBaseGameLayer) {
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
     }
 
-    void processCommands(float dt) {
-        GJBaseGameLayer::processCommands(dt);
-        if (g_simulating || !g_pending) return;
+    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
+        // 한 프레임에 여러 번 호출되므로 마지막 틱에서만 프레임 카운트를 줄임
+        if (g_simulating || !g_pending || !isLastTick) return;
         if (--g_pending->framesLeft <= 0) {
             auto p = *g_pending;
             g_pending.reset();
